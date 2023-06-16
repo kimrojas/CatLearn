@@ -1,7 +1,13 @@
 import numpy as np
-from catlearn.optimize.io import ase_to_catlearn, store_results_neb, \
-                                 print_version, store_trajectory_neb, \
-                                 print_info_neb, array_to_ase, print_cite_mlneb
+from catlearn.optimize.io import (
+    ase_to_catlearn,
+    store_results_neb,
+    print_version,
+    store_trajectory_neb,
+    print_info_neb,
+    array_to_ase,
+    print_cite_mlneb,
+)
 from catlearn.optimize.constraints import create_mask, apply_mask
 from ase.neb import NEB
 from ase.neb import NEBTools
@@ -13,17 +19,26 @@ import os
 from catlearn.regression import GaussianProcess
 from ase.calculators.calculator import Calculator, all_changes
 from ase.atoms import Atoms
+from catlearn.utilities.timings import Timer
 from catlearn import __version__
 
 
 class MLNEB(object):
-
-    def __init__(self, start, end, prev_calculations=None,
-                 n_images=0.25, k=None, interpolation='linear', mic=False,
-                 neb_method='improvedtangent', ase_calc=None, restart=True,
-                 force_consistent=None):
-
-        """ Nudged elastic band (NEB) setup.
+    def __init__(
+        self,
+        start,
+        end,
+        prev_calculations=None,
+        n_images=0.25,
+        k=None,
+        interpolation="linear",
+        mic=False,
+        neb_method="improvedtangent",
+        ase_calc=None,
+        restart=True,
+        force_consistent=None,
+    ):
+        """Nudged elastic band (NEB) setup.
 
         Parameters
         ----------
@@ -66,23 +81,26 @@ class MLNEB(object):
 
         """
 
+        self.timer = Timer(debug=False, logfile="mlneb_timings.log")
+        self.timer.start("MLNEB Initialize")
+
         path = None
 
         # Convert Atoms and list of Atoms to trajectory files.
         if isinstance(start, Atoms):
-            write('initial.traj', start)
-            start = 'initial.traj'
+            write("initial.traj", start)
+            start = "initial.traj"
         if isinstance(end, Atoms):
-            write('final.traj', end)
-            end = 'final.traj'
-        if interpolation != 'idpp' and interpolation != 'linear':
+            write("final.traj", end)
+            end = "final.traj"
+        if interpolation != "idpp" and interpolation != "linear":
             path = interpolation
         if isinstance(path, list):
-            write('initial_path.traj', path)
-            path = 'initial_path.traj'
+            write("initial_path.traj", path)
+            path = "initial_path.traj"
         if isinstance(prev_calculations, list):
-            write('prev_calcs.traj', prev_calculations)
-            prev_calculations = 'prev_calcs.traj'
+            write("prev_calcs.traj", prev_calculations)
+            prev_calculations = "prev_calcs.traj"
 
         # Start end-point, final end-point and path (optional).
         self.start = start
@@ -96,9 +114,8 @@ class MLNEB(object):
         self.ase_calc = ase_calc
         self.ase = True
         self.mic = mic
-        self.version = 'ML-NEB ' + __version__
+        self.version = "ML-NEB " + __version__
         print_version(self.version)
-
 
         # Reset.
         self.constraints = None
@@ -106,15 +123,15 @@ class MLNEB(object):
         self.acq = None
         self.gp = None
 
-        msg = 'Error: Initial structure for the NEB was not provided.'
+        msg = "Error: Initial structure for the NEB was not provided."
         assert start is not None, msg
-        msg = 'Error: Final structure for the NEB was not provided.'
+        msg = "Error: Final structure for the NEB was not provided."
         assert end is not None, msg
         msg = 'ASE calculator not provided (see "ase_calc" flag).'
         assert self.ase_calc, msg
 
-        is_endpoint = read(start, '-1:')
-        fs_endpoint = read(end, '-1:')
+        is_endpoint = read(start, "-1:")
+        fs_endpoint = read(end, "-1:")
         is_pos = is_endpoint[-1].get_positions().flatten()
         fs_pos = fs_endpoint[-1].get_positions().flatten()
 
@@ -129,28 +146,36 @@ class MLNEB(object):
         if restart is not True:
             merged_trajectory = is_endpoint + fs_endpoint
             trj = ase_to_catlearn(merged_trajectory)
-            write('./evaluated_structures.traj', is_endpoint + fs_endpoint)
+            write("./evaluated_structures.traj", is_endpoint + fs_endpoint)
 
         if restart is True or prev_calculations is not None:
             if prev_calculations is None:
-                eval_file = 'evaluated_structures.traj'
+                eval_file = "evaluated_structures.traj"
             if prev_calculations is not None:
                 eval_file = prev_calculations
             if os.path.exists(eval_file):
-                eval_atoms = read(eval_file, ':')
+                eval_atoms = read(eval_file, ":")
                 trj = ase_to_catlearn(eval_atoms)
             if not os.path.exists(eval_file):
                 merged_trajectory = is_endpoint + fs_endpoint
                 trj = ase_to_catlearn(merged_trajectory)
-                write('./evaluated_structures.traj', is_endpoint + fs_endpoint)
+                write("./evaluated_structures.traj", is_endpoint + fs_endpoint)
 
-        self.list_train, self.list_targets, self.list_gradients, trj_images, \
-            self.constraints, self.num_atoms = [trj['list_train'],
-                                                trj['list_targets'],
-                                                trj['list_gradients'],
-                                                trj['images'],
-                                                trj['constraints'],
-                                                trj['num_atoms']]
+        (
+            self.list_train,
+            self.list_targets,
+            self.list_gradients,
+            trj_images,
+            self.constraints,
+            self.num_atoms,
+        ) = [
+            trj["list_train"],
+            trj["list_targets"],
+            trj["list_gradients"],
+            trj["images"],
+            trj["constraints"],
+            trj["num_atoms"],
+        ]
         self.ase_ini = read(start)
         self.num_atoms = len(self.ase_ini)
         if len(self.constraints) < 0:
@@ -159,10 +184,8 @@ class MLNEB(object):
             self.index_mask = create_mask(self.ase_ini, self.constraints)
 
         # Obtain the energy of the endpoints for scaling:
-        self.energy_is = is_endpoint[-1].get_potential_energy(
-                                                      force_consistent=self.fc)
-        self.energy_fs = fs_endpoint[-1].get_potential_energy(
-                                                      force_consistent=self.fc)
+        self.energy_is = is_endpoint[-1].get_potential_energy(force_consistent=self.fc)
+        self.energy_fs = fs_endpoint[-1].get_potential_energy(force_consistent=self.fc)
 
         # Set scaling of the targets:
         self.max_targets = np.max([self.energy_is, self.energy_fs])
@@ -177,20 +200,21 @@ class MLNEB(object):
         if path is None:
             self.d_start_end = np.abs(distance.euclidean(is_pos, fs_pos))
             if isinstance(self.n_images, float):
-                self.n_images = int(self.d_start_end/self.n_images)
-                if self. n_images <= 3:
+                self.n_images = int(self.d_start_end / self.n_images)
+                if self.n_images <= 3:
                     self.n_images = 3
             if self.spring is None:
-                self.spring = np.sqrt((self.n_images-1) / self.d_start_end)
-            self.images = create_ml_neb(is_endpoint=self.initial_endpoint,
-                                        fs_endpoint=self.final_endpoint,
-                                        images_interpolation=None,
-                                        n_images=self.n_images,
-                                        constraints=self.constraints,
-                                        index_constraints=self.index_mask,
-                                        scaling_targets=self.max_targets,
-                                        iteration=self.iter,
-                                        )
+                self.spring = np.sqrt((self.n_images - 1) / self.d_start_end)
+            self.images = create_ml_neb(
+                is_endpoint=self.initial_endpoint,
+                fs_endpoint=self.final_endpoint,
+                images_interpolation=None,
+                n_images=self.n_images,
+                constraints=self.constraints,
+                index_constraints=self.index_mask,
+                scaling_targets=self.max_targets,
+                iteration=self.iter,
+            )
 
             neb_interpolation = NEB(self.images, k=self.spring)
 
@@ -198,36 +222,35 @@ class MLNEB(object):
 
         # B) If the user sets a path:
         if path is not None:
-            images_path = read(path, ':')
+            images_path = read(path, ":")
 
-            if not np.array_equal(images_path[0].get_positions().flatten(),
-                                  is_pos):
+            if not np.array_equal(images_path[0].get_positions().flatten(), is_pos):
                 images_path.insert(0, self.initial_endpoint)
-            if not np.array_equal(images_path[-1].get_positions().flatten(),
-                                  fs_pos):
+            if not np.array_equal(images_path[-1].get_positions().flatten(), fs_pos):
                 images_path.append(self.final_endpoint)
 
             self.n_images = len(images_path)
-            self.images = create_ml_neb(is_endpoint=self.initial_endpoint,
-                                        fs_endpoint=self.final_endpoint,
-                                        images_interpolation=images_path,
-                                        n_images=self.n_images,
-                                        constraints=self.constraints,
-                                        index_constraints=self.index_mask,
-                                        scaling_targets=self.max_targets,
-                                        iteration=self.iter,
-                                        )
+            self.images = create_ml_neb(
+                is_endpoint=self.initial_endpoint,
+                fs_endpoint=self.final_endpoint,
+                images_interpolation=images_path,
+                n_images=self.n_images,
+                constraints=self.constraints,
+                index_constraints=self.index_mask,
+                scaling_targets=self.max_targets,
+                iteration=self.iter,
+            )
             self.d_start_end = np.abs(distance.euclidean(is_pos, fs_pos))
 
         # Save files with all the paths that have been predicted:
 
-        write('all_predicted_paths.traj', self.images)
+        write("all_predicted_paths.traj", self.images)
 
         self.uncertainty_path = np.zeros(len(self.images))
 
         # Guess spring constant if spring was not set by the user:
         if self.spring is None:
-            self.spring = np.sqrt(self.n_images-1) / self.d_start_end
+            self.spring = np.sqrt(self.n_images - 1) / self.d_start_end
 
         # Get initial path distance:
         self.path_distance = self.d_start_end.copy()
@@ -235,17 +258,27 @@ class MLNEB(object):
         # Get forces for the previous steps
         self.list_max_abs_forces = []
         for i in self.list_gradients:
-                self.list_fmax = get_fmax(np.array([i]))
-                self.max_abs_forces = np.max(np.abs(self.list_fmax))
-                self.list_max_abs_forces.append(self.max_abs_forces)
+            self.list_fmax = get_fmax(np.array([i]))
+            self.max_abs_forces = np.max(np.abs(self.list_fmax))
+            self.list_max_abs_forces.append(self.max_abs_forces)
 
         print_info_neb(self)
 
-    def run(self, fmax=0.05, unc_convergence=0.050, steps=500,
-            trajectory='ML_NEB_catlearn.traj', acquisition='acq_5',
-            dt=0.025, ml_steps=750, max_step=0.25, sequential=False,
-            full_output=False):
+        self.timer.stop("MLNEB Initialize")
 
+    def run(
+        self,
+        fmax=0.05,
+        unc_convergence=0.050,
+        steps=500,
+        trajectory="ML_NEB_catlearn.traj",
+        acquisition="acq_5",
+        dt=0.025,
+        ml_steps=750,
+        max_step=0.25,
+        sequential=False,
+        full_output=False,
+    ):
         """Executing run will start the NEB optimization process.
 
         Parameters
@@ -281,16 +314,16 @@ class MLNEB(object):
         Minimum Energy Path from the initial to the final states.
 
         """
+        self.timer.start("MLNEB Run")
         self.acq = acquisition
         self.fullout = full_output
 
         # Calculate a third point if only known initial & final structures.
         if len(self.list_targets) == 2:
-            middle = int(self.n_images * (2./3.))
+            middle = int(self.n_images * (2.0 / 3.0))
             if self.energy_is >= self.energy_fs:
-                middle = int(self.n_images * (1./3.))
-            self.interesting_point = \
-                self.images[middle].get_positions().flatten()
+                middle = int(self.n_images * (1.0 / 3.0))
+            self.interesting_point = self.images[middle].get_positions().flatten()
 
             eval_and_append(self, self.interesting_point)
 
@@ -310,46 +343,55 @@ class MLNEB(object):
             self.n_images = 3
 
         while True:
+            self.timer.start(f"({self.iter:<4d}): Workflow loop", level=0)
 
             # 1. Train Machine Learning process.
-            self.gp, self.max_target = \
-                train_gp_model(self.list_train, self.list_targets,
-                               self.list_gradients, self.index_mask,
-                               self.path_distance, self.fullout)
+            self.timer.start(f"({self.iter:<4d}): Train GP Model", level=1)
+            self.gp, self.max_target = train_gp_model(
+                self.list_train,
+                self.list_targets,
+                self.list_gradients,
+                self.index_mask,
+                self.path_distance,
+                self.fullout,
+            )
+            self.timer.stop(f"({self.iter:<4d}): Train GP Model")
 
             # 2. Setup and run ML NEB:
             if self.fullout is True:
-                parprint('Max number steps:', ml_steps)
+                parprint("Max number steps:", ml_steps)
             ml_cycles = 0
 
+            self.timer.start(f"({self.iter:<4d}): ML NEB optimization", level=1)
             while True:
-
                 if stationary_point_found is True:
                     self.n_images = org_n_images
 
                 starting_path = self.images  # Start from last path.
 
                 if ml_cycles == 0:
-                    sp = '0:' + str(self.n_images)
+                    sp = "0:" + str(self.n_images)
                     if self.fullout is True:
-                        parprint('Using initial path.')
-                    starting_path = read('./all_predicted_paths.traj', sp)
+                        parprint("Using initial path.")
+                    starting_path = read("./all_predicted_paths.traj", sp)
 
                 if ml_cycles == 1:
                     if self.fullout is True:
-                        parprint('Using last predicted path.')
-                    sp = str(-self.n_images) + ':'
-                    starting_path = read('./all_predicted_paths.traj', sp)
+                        parprint("Using last predicted path.")
+                    sp = str(-self.n_images) + ":"
+                    starting_path = read("./all_predicted_paths.traj", sp)
 
-                self.images = create_ml_neb(is_endpoint=self.initial_endpoint,
-                                            fs_endpoint=self.final_endpoint,
-                                            images_interpolation=starting_path,
-                                            n_images=self.n_images,
-                                            constraints=self.constraints,
-                                            index_constraints=self.index_mask,
-                                            gp=self.gp,
-                                            scaling_targets=self.max_target,
-                                            iteration=self.iter)
+                self.images = create_ml_neb(
+                    is_endpoint=self.initial_endpoint,
+                    fs_endpoint=self.final_endpoint,
+                    images_interpolation=starting_path,
+                    n_images=self.n_images,
+                    constraints=self.constraints,
+                    index_constraints=self.index_mask,
+                    gp=self.gp,
+                    scaling_targets=self.max_target,
+                    iteration=self.iter,
+                )
 
                 # Test before optimization:
 
@@ -360,16 +402,16 @@ class MLNEB(object):
 
                 if unc_ml >= max_step:
                     if self.fullout is True:
-                        parprint('Maximum uncertainty reach in initial path.')
-                        parprint('Early stop.')
+                        parprint("Maximum uncertainty reach in initial path.")
+                        parprint("Early stop.")
                     break
 
                 # Perform NEB in the predicted landscape.
-                ml_neb = NEB(self.images, climb=True,
-                             method=self.neb_method,
-                             k=self.spring)
+                ml_neb = NEB(
+                    self.images, climb=True, method=self.neb_method, k=self.spring
+                )
                 if self.fullout is True:
-                    parprint('Optimizing ML CI-NEB using dt:', dt)
+                    parprint("Optimizing ML CI-NEB using dt:", dt)
                 neb_opt = MDMin(ml_neb, dt=dt, logfile=None)
                 if full_output is True:
                     neb_opt = MDMin(ml_neb, dt=dt)
@@ -377,6 +419,10 @@ class MLNEB(object):
                 ml_converged = False
                 n_steps_performed = 0
                 while ml_converged is False:
+                    self.timer.start(
+                        f"({self.iter:<4d}): ML NEB - cycle [{n_steps_performed:05d}]",
+                        level=2,
+                    )
                     # Save prev. positions:
                     prev_save_positions = []
 
@@ -395,184 +441,219 @@ class MLNEB(object):
                         for i in range(0, self.n_images):
                             self.images[i].positions = prev_save_positions[i]
                         if self.fullout is True:
-                            parprint('Pred. energy above max. energy. '
-                                     'Early stop.')
+                            parprint("Pred. energy above max. energy. " "Early stop.")
                         ml_converged = True
 
                     if unc_ml >= max_step:
                         for i in range(0, self.n_images):
                             self.images[i].positions = prev_save_positions[i]
                         if self.fullout is True:
-                            parprint('Maximum uncertainty reach. Early stop.')
+                            parprint("Maximum uncertainty reach. Early stop.")
                         ml_converged = True
+
                     if neb_opt.converged():
                         ml_converged = True
 
                     if np.isnan(ml_neb.emax):
-                        sp = str(-self.n_images) + ':'
-                        self.images = read('./all_predicted_paths.traj', sp)
+                        sp = str(-self.n_images) + ":"
+                        self.images = read("./all_predicted_paths.traj", sp)
                         for i in self.images:
                             i.get_potential_energy()
                         n_steps_performed = 10000
 
-                    if n_steps_performed > ml_steps-1:
+                    if n_steps_performed > ml_steps - 1:
                         if self.fullout is True:
-                            parprint('Not converged yet...')
+                            parprint("Not converged yet...")
                         ml_converged = True
 
-                if n_steps_performed <= ml_steps-1:
+                    self.timer.stop(
+                        f"({self.iter:<4d}): ML NEB - cycle [{n_steps_performed-1:05d}]"
+                    )
+
+                if n_steps_performed <= ml_steps - 1:
                     if self.fullout is True:
-                        parprint('Converged opt. in the predicted landscape.')
+                        parprint("Converged opt. in the predicted landscape.")
                     break
 
                 ml_cycles += 1
                 if self.fullout is True:
-                    parprint('ML cycles performed:', ml_cycles)
+                    parprint("ML cycles performed:", ml_cycles)
 
                 if ml_cycles == 2:
                     if self.fullout is True:
-                        parprint('ML process not optimized...not safe...')
-                        parprint('Change interpolation or numb. of images.')
+                        parprint("ML process not optimized...not safe...")
+                        parprint("Change interpolation or numb. of images.")
                     break
+            self.timer.stop(f"({self.iter:<4d}): ML NEB optimization")
 
             # 3. Get results from ML NEB using ASE NEB Tools:
             # See https://wiki.fysik.dtu.dk/ase/ase/neb.html
-
+            self.timer.start(f"({self.iter:<4d}): Get results", level=1)
             self.interesting_point = []
 
             # Get fit of the discrete path.
             get_results_predicted_path(self)
 
             pred_plus_unc = np.array(self.e_path[1:-1]) + np.array(
-                                                   self.uncertainty_path[1:-1])
+                self.uncertainty_path[1:-1]
+            )
+            self.timer.stop(f"({self.iter:<4d}): Get results")
 
             # 4. Select next point to train (acquisition function):
-
+            self.timer.start(f"({self.iter:<4d}): Acquisition function", level=1)
             # Acquisition function 1:
-            if self.acq == 'acq_1':
+            if self.acq == "acq_1":
                 # Behave like acquisition 4...
                 # Select image with max. uncertainty.
                 if self.iter % 2 == 0:
                     self.argmax_unc = np.argmax(self.uncertainty_path[1:-1])
-                    self.interesting_point = self.images[1:-1][
-                                    self.argmax_unc].get_positions().flatten()
+                    self.interesting_point = (
+                        self.images[1:-1][self.argmax_unc].get_positions().flatten()
+                    )
 
                 # Select image with max. predicted value.
                 if self.iter % 2 == 1:
                     self.argmax_unc = np.argmax(pred_plus_unc)
-                    self.interesting_point = self.images[1:-1][
-                                int(self.argmax_unc)].get_positions().flatten()
+                    self.interesting_point = (
+                        self.images[1:-1][int(self.argmax_unc)]
+                        .get_positions()
+                        .flatten()
+                    )
 
             # Acquisition function 2:
-            if self.acq == 'acq_2':
+            if self.acq == "acq_2":
                 # Select image with max. uncertainty.
                 self.argmax_unc = np.argmax(self.uncertainty_path[1:-1])
-                self.interesting_point = self.images[1:-1][
-                                  self.argmax_unc].get_positions().flatten()
+                self.interesting_point = (
+                    self.images[1:-1][self.argmax_unc].get_positions().flatten()
+                )
 
                 # Select image with max. predicted value.
                 if np.max(self.uncertainty_path[1:-1]) < unc_convergence:
-
                     self.argmax_unc = np.argmax(pred_plus_unc)
-                    self.interesting_point = self.images[1:-1][
-                                int(self.argmax_unc)].get_positions().flatten()
+                    self.interesting_point = (
+                        self.images[1:-1][int(self.argmax_unc)]
+                        .get_positions()
+                        .flatten()
+                    )
 
             # Acquisition function 3:
-            if self.acq == 'acq_3':
+            if self.acq == "acq_3":
                 # Select image with max. uncertainty.
                 self.argmax_unc = np.argmax(self.uncertainty_path[1:-1])
-                self.interesting_point = self.images[1:-1][
-                                    self.argmax_unc].get_positions().flatten()
+                self.interesting_point = (
+                    self.images[1:-1][self.argmax_unc].get_positions().flatten()
+                )
 
                 # When reached certain uncertainty apply acq. 1.
                 if np.max(self.uncertainty_path[1:-1]) < unc_convergence:
                     # Select image with max. uncertainty.
                     if self.iter % 2 == 0:
-                        self.argmax_unc = \
-                                        np.argmax(self.uncertainty_path[1:-1])
-                        self.interesting_point = self.images[1:-1][
-                                    self.argmax_unc].get_positions().flatten()
+                        self.argmax_unc = np.argmax(self.uncertainty_path[1:-1])
+                        self.interesting_point = (
+                            self.images[1:-1][self.argmax_unc].get_positions().flatten()
+                        )
                     # Select image with max. predicted value.
                     if self.iter % 2 == 1:
                         self.argmax_unc = np.argmax(pred_plus_unc)
-                        self.interesting_point = self.images[1:-1][
-                                int(self.argmax_unc)].get_positions().flatten()
+                        self.interesting_point = (
+                            self.images[1:-1][int(self.argmax_unc)]
+                            .get_positions()
+                            .flatten()
+                        )
 
             # Acquisition function 4 (from acq 2):
-            if self.acq == 'acq_4':
+            if self.acq == "acq_4":
                 # Select image with max. uncertainty.
                 if self.iter % 2 == 0:
                     self.argmax_unc = np.argmax(self.uncertainty_path[1:-1])
-                    self.interesting_point = self.images[1:-1][
-                                    self.argmax_unc].get_positions().flatten()
+                    self.interesting_point = (
+                        self.images[1:-1][self.argmax_unc].get_positions().flatten()
+                    )
 
                 # Select image with max. predicted value.
                 if self.iter % 2 == 1:
                     self.argmax_unc = np.argmax(pred_plus_unc)
-                    self.interesting_point = self.images[1:-1][
-                                int(self.argmax_unc)].get_positions().flatten()
+                    self.interesting_point = (
+                        self.images[1:-1][int(self.argmax_unc)]
+                        .get_positions()
+                        .flatten()
+                    )
                 # If stationary point is found behave like acquisition 2...
                 if stationary_point_found is True:
                     # Select image with max. uncertainty.
                     self.argmax_unc = np.argmax(self.uncertainty_path[1:-1])
-                    self.interesting_point = self.images[1:-1][
-                                     self.argmax_unc].get_positions().flatten()
+                    self.interesting_point = (
+                        self.images[1:-1][self.argmax_unc].get_positions().flatten()
+                    )
 
                     # Select image with max. predicted value.
                     if np.max(self.uncertainty_path[1:-1]) < unc_convergence:
-
                         self.argmax_unc = np.argmax(pred_plus_unc)
-                        self.interesting_point = self.images[1:-1][
-                                int(self.argmax_unc)].get_positions().flatten()
+                        self.interesting_point = (
+                            self.images[1:-1][int(self.argmax_unc)]
+                            .get_positions()
+                            .flatten()
+                        )
 
             # Acquisition function 5 (From acq 3):
-            if self.acq == 'acq_5':
+            if self.acq == "acq_5":
                 # Select image with max. uncertainty.
                 self.argmax_unc = np.argmax(self.uncertainty_path[1:-1])
-                self.interesting_point = self.images[1:-1][
-                                 self.argmax_unc].get_positions().flatten()
+                self.interesting_point = (
+                    self.images[1:-1][self.argmax_unc].get_positions().flatten()
+                )
 
                 # When reached certain uncertainty apply acq. 1.
                 if np.max(self.uncertainty_path[1:-1]) < unc_convergence:
                     # Select image with max. uncertainty.
                     if self.iter % 2 == 0:
-                        self.argmax_unc = \
-                                     np.argmax(self.uncertainty_path[1:-1])
-                        self.interesting_point = self.images[1:-1][
-                                 self.argmax_unc].get_positions().flatten()
+                        self.argmax_unc = np.argmax(self.uncertainty_path[1:-1])
+                        self.interesting_point = (
+                            self.images[1:-1][self.argmax_unc].get_positions().flatten()
+                        )
 
                     # Select image with max. predicted value.
                     if self.iter % 2 == 1:
                         self.argmax_unc = np.argmax(pred_plus_unc)
-                        self.interesting_point = self.images[1:-1][
-                            int(self.argmax_unc)].get_positions().flatten()
+                        self.interesting_point = (
+                            self.images[1:-1][int(self.argmax_unc)]
+                            .get_positions()
+                            .flatten()
+                        )
                     # If stationary point is found behave like acq. 2.
                     if stationary_point_found is True:
                         # Select image with max. uncertainty.
-                        self.argmax_unc = \
-                                     np.argmax(self.uncertainty_path[1:-1])
-                        self.interesting_point = self.images[1:-1][
-                                 self.argmax_unc].get_positions().flatten()
+                        self.argmax_unc = np.argmax(self.uncertainty_path[1:-1])
+                        self.interesting_point = (
+                            self.images[1:-1][self.argmax_unc].get_positions().flatten()
+                        )
 
                     # Select image with max. predicted value.
-                    if np.max(self.uncertainty_path[1:-1]) < \
-                                                           unc_convergence:
-
+                    if np.max(self.uncertainty_path[1:-1]) < unc_convergence:
                         self.argmax_unc = np.argmax(pred_plus_unc)
-                        self.interesting_point = \
-                            self.images[1:-1][int(
-                                self.argmax_unc)].get_positions().flatten()
+                        self.interesting_point = (
+                            self.images[1:-1][int(self.argmax_unc)]
+                            .get_positions()
+                            .flatten()
+                        )
+            self.timer.stop(f"({self.iter:<4d}): Acquisition function")
 
             # 5. Add a new training point and evaluate it.
+            self.timer.start(
+                f"({self.iter:<4d}): Add & evaluate new training point", level=1
+            )
             if self.fullout is True:
-                parprint('Performing evaluation on the real landscape...')
+                parprint("Performing evaluation on the real landscape...")
             eval_and_append(self, self.interesting_point)
+            self.timer.stop(f"({self.iter:<4d}): Add & evaluate new training point")
             self.iter += 1
             if self.fullout is True:
-                parprint('Single-point calculation finished.')
+                parprint("Single-point calculation finished.")
 
             # 6. Store results.
-            parprint('\n')
+            self.timer.start(f"({self.iter-1:<4d}): Store results", level=1)
+            parprint("\n")
             self.energy_forward = np.max(self.e_path) - self.e_path[0]
             self.energy_backward = np.max(self.e_path) - self.e_path[-1]
             self.max_forces = get_fmax(np.array([self.list_gradients[-1]]))
@@ -581,9 +662,10 @@ class MLNEB(object):
             print_info_neb(self)
             store_results_neb(self)
             store_trajectory_neb(self)
+            self.timer.stop(f"({self.iter-1:<4d}): Store results")
 
             # 7. Check convergence:
-
+            self.timer.start(f"({self.iter-1:<4d}): Check convergence", level=1)
             if self.max_abs_forces <= fmax:
                 stationary_point_found = True
 
@@ -591,44 +673,66 @@ class MLNEB(object):
             if self.max_abs_forces <= fmax and self.n_images == org_n_images:
                 msg = "Congratulations! Stationary point is found! "
                 msg2 = "Check the file 'evaluated_structures.traj' using ASE."
-                parprint(msg+msg2)
+                parprint(msg + msg2)
 
                 if np.max(self.uncertainty_path[1:-1]) < unc_convergence:
                     # Save results of the final step (converged):
-                    self.gp, self.max_target = \
-                        train_gp_model(self.list_train, self.list_targets,
-                                       self.list_gradients, self.index_mask,
-                                       self.path_distance, self.fullout)
+                    self.gp, self.max_target = train_gp_model(
+                        self.list_train,
+                        self.list_targets,
+                        self.list_gradients,
+                        self.index_mask,
+                        self.path_distance,
+                        self.fullout,
+                    )
                     get_results_predicted_path(self)
                     store_results_neb(self)
                     msg = "Congratulations! Your ML NEB is converged. "
                     msg2 = "If you want to plot the ML NEB predicted path you "
                     msg3 = "should check the files 'results_neb.csv' "
                     msg4 = "and 'results_neb_interpolation.csv'."
-                    parprint(msg+msg2+msg3+msg4)
+                    parprint(msg + msg2 + msg3 + msg4)
                     # Last path.
                     write(trajectory, self.images)
-                    parprint('The optimized predicted path can be found in: ',
-                             trajectory)
+                    parprint(
+                        "The optimized predicted path can be found in: ", trajectory
+                    )
                     # Clean up:
                     if world.rank == 0:
-                        os.remove('./last_predicted_path.traj')
-                        os.remove('./all_predicted_paths.traj')
+                        os.remove("./last_predicted_path.traj")
+                        os.remove("./all_predicted_paths.traj")
                     break
 
             # Break if reaches the max number of iterations set by the user.
             if steps <= self.iter:
-                parprint('Maximum number iterations reached. Not converged.')
+                parprint("Maximum number iterations reached. Not converged.")
                 break
+            self.timer.stop(f"({self.iter-1:<4d}): Check convergence")
+            self.timer.stop(f"({self.iter-1:<4d}): Workflow loop")
 
-        parprint('Number of steps performed in total:',
-                 len(self.list_targets)-2)
+        try:  # if break happens
+            self.timer.stop(f"({self.iter-1:<4d}): Check convergence")
+            self.timer.stop(f"({self.iter-1:<4d}): Workflow loop")
+        except:
+            pass
+
+        parprint("Number of steps performed in total:", len(self.list_targets) - 2)
         print_cite_mlneb()
 
+        self.timer.stop("MLNEB Run")
 
-def create_ml_neb(is_endpoint, fs_endpoint, images_interpolation,
-                  n_images, constraints, index_constraints,
-                  scaling_targets, iteration, gp=None):
+
+def create_ml_neb(
+    is_endpoint,
+    fs_endpoint,
+    images_interpolation,
+    n_images,
+    constraints,
+    index_constraints,
+    scaling_targets,
+    iteration,
+    gp=None,
+):
     """
     Generates input NEB for the GPR.
     """
@@ -637,18 +741,22 @@ def create_ml_neb(is_endpoint, fs_endpoint, images_interpolation,
     imgs = [is_endpoint]
 
     # Append labels, uncertainty and iter to the first end-point:
-    imgs[0].info['label'] = 0
-    imgs[0].info['uncertainty'] = 0.0
-    imgs[0].info['iteration'] = iteration
+    imgs[0].info["label"] = 0
+    imgs[0].info["uncertainty"] = 0.0
+    imgs[0].info["iteration"] = iteration
 
-    for i in range(1, n_images-1):
+    for i in range(1, n_images - 1):
         image = is_endpoint.copy()
-        image.info['label'] = i
-        image.info['uncertainty'] = 0.0
-        image.info['iteration'] = iteration
-        image.set_calculator(ASECalc(gp=gp,
-                                     index_constraints=index_constraints,
-                                     scaling_targets=scaling_targets))
+        image.info["label"] = i
+        image.info["uncertainty"] = 0.0
+        image.info["iteration"] = iteration
+        image.set_calculator(
+            ASECalc(
+                gp=gp,
+                index_constraints=index_constraints,
+                scaling_targets=scaling_targets,
+            )
+        )
         if images_interpolation is not None:
             image.set_positions(images_interpolation[i].get_positions())
         image.set_constraint(constraints)
@@ -658,24 +766,25 @@ def create_ml_neb(is_endpoint, fs_endpoint, images_interpolation,
     imgs.append(fs_endpoint)
 
     # Append labels, uncertainty and iter to the last end-point:
-    imgs[-1].info['label'] = n_images-1
-    imgs[-1].info['uncertainty'] = 0.0
-    imgs[-1].info['iteration'] = iteration
+    imgs[-1].info["label"] = n_images - 1
+    imgs[-1].info["uncertainty"] = 0.0
+    imgs[-1].info["iteration"] = iteration
 
     return imgs
 
 
 @parallel_function
-def train_gp_model(list_train, list_targets, list_gradients, index_mask,
-                   path_distance, fullout=False):
+def train_gp_model(
+    list_train, list_targets, list_gradients, index_mask, path_distance, fullout=False
+):
     """
     Train Gaussian process
     """
     max_target = np.max(list_targets)
     scaled_targets = list_targets.copy() - max_target
-    sigma_f = 1e-3 + np.std(scaled_targets)**2
+    sigma_f = 1e-3 + np.std(scaled_targets) ** 2
 
-    dimension = 'single'
+    dimension = "single"
     bounds = ((0.1, path_distance),)
 
     width = path_distance / 2
@@ -686,45 +795,53 @@ def train_gp_model(list_train, list_targets, list_gradients, index_mask,
     noise_energy = 0.005
     noise_forces = 0.0005
 
-    kdict = [{'type': 'gaussian', 'width': width,
-              'dimension': dimension,
-              'bounds': bounds,
-              'scaling': sigma_f,
-              'scaling_bounds': ((sigma_f, sigma_f),)},
-             {'type': 'noise_multi',
-              'hyperparameters': [noise_energy, noise_forces],
-              'bounds': ((0.001, 0.005),
-                         (0.0005, 0.002),)}
-             ]
+    kdict = [
+        {
+            "type": "gaussian",
+            "width": width,
+            "dimension": dimension,
+            "bounds": bounds,
+            "scaling": sigma_f,
+            "scaling_bounds": ((sigma_f, sigma_f),),
+        },
+        {
+            "type": "noise_multi",
+            "hyperparameters": [noise_energy, noise_forces],
+            "bounds": (
+                (0.001, 0.005),
+                (0.0005, 0.002),
+            ),
+        },
+    ]
 
     train = list_train.copy()
     gradients = list_gradients.copy()
     if index_mask is not None:
-        train = apply_mask(list_to_mask=list_train,
-                           mask_index=index_mask)[1]
-        gradients = apply_mask(list_to_mask=list_gradients,
-                               mask_index=index_mask)[1]
-    parprint('\n')
-    parprint('Training a Gaussian process...')
-    parprint('Number of training points:', len(scaled_targets))
+        train = apply_mask(list_to_mask=list_train, mask_index=index_mask)[1]
+        gradients = apply_mask(list_to_mask=list_gradients, mask_index=index_mask)[1]
+    parprint("\n")
+    parprint("Training a Gaussian process...")
+    parprint("Number of training points:", len(scaled_targets))
 
-    gp = GaussianProcess(kernel_list=kdict,
-                         regularization=0.0,
-                         regularization_bounds=(0.0, 0.0),
-                         train_fp=train,
-                         train_target=scaled_targets,
-                         gradients=gradients,
-                         optimize_hyperparameters=False,
-                         scale_data=False)
+    gp = GaussianProcess(
+        kernel_list=kdict,
+        regularization=0.0,
+        regularization_bounds=(0.0, 0.0),
+        train_fp=train,
+        train_target=scaled_targets,
+        gradients=gradients,
+        optimize_hyperparameters=False,
+        scale_data=False,
+    )
     gp.optimize_hyperparameters(global_opt=False)
     if fullout:
-        parprint('Optimized hyperparameters:', gp.kernel_list)
-    parprint('Gaussian process trained.')
+        parprint("Optimized hyperparameters:", gp.kernel_list)
+    parprint("Gaussian process trained.")
 
     return gp, max_target
 
-def get_results_predicted_path(self):
 
+def get_results_predicted_path(self):
     """
     Obtain results from the predicted NEB.
     """
@@ -736,15 +853,14 @@ def get_results_predicted_path(self):
     self.e_path = []
     for i in self.images:
         pos_unc = [i.get_positions().flatten()]
-        pos_unc = apply_mask(list_to_mask=pos_unc,
-                             mask_index=self.index_mask)[1]
+        pos_unc = apply_mask(list_to_mask=pos_unc, mask_index=self.index_mask)[1]
         u = self.gp.predict(test_fp=pos_unc, uncertainty=True)
-        uncertainty = 2.0 * u['uncertainty_with_reg'][0]
-        i.info['uncertainty'] = uncertainty
+        uncertainty = 2.0 * u["uncertainty_with_reg"][0]
+        i.info["uncertainty"] = uncertainty
         self.uncertainty_path.append(uncertainty)
         self.e_path.append(i.get_total_energy())
-    self.images[0].info['uncertainty'] = 0.0
-    self.images[-1].info['uncertainty'] = 0.0
+    self.images[0].info["uncertainty"] = 0.0
+    self.images[-1].info["uncertainty"] = 0.0
 
 
 class ASECalc(Calculator):
@@ -753,12 +869,12 @@ class ASECalc(Calculator):
     CatLearn/ASE calculator.
     """
 
-    implemented_properties = ['energy', 'forces']
+    implemented_properties = ["energy", "forces"]
     nolabel = True
 
-    def __init__(self, gp, index_constraints, scaling_targets,
-                 finite_step=1e-4, **kwargs):
-
+    def __init__(
+        self, gp, index_constraints, scaling_targets, finite_step=1e-4, **kwargs
+    ):
         Calculator.__init__(self, **kwargs)
 
         self.gp = gp
@@ -766,33 +882,31 @@ class ASECalc(Calculator):
         self.fs = finite_step
         self.ind_constraints = index_constraints
 
-    def calculate(self, atoms=None, properties=['energy', 'forces'],
-                  system_changes=all_changes):
-
+    def calculate(
+        self, atoms=None, properties=["energy", "forces"], system_changes=all_changes
+    ):
         # Atoms object.
         self.atoms = atoms
 
         def pred_energy_test(test, gp=self.gp, scaling=self.scaling):
-
             # Get predictions.
             predictions = gp.predict(test_fp=test, uncertainty=False)
-            return predictions['prediction'][0][0] + scaling
+            return predictions["prediction"][0][0] + scaling
 
         Calculator.calculate(self, atoms, properties, system_changes)
 
         pos_flatten = self.atoms.get_positions().flatten()
 
-        test_point = apply_mask(list_to_mask=[pos_flatten],
-                                mask_index=self.ind_constraints)[1]
+        test_point = apply_mask(
+            list_to_mask=[pos_flatten], mask_index=self.ind_constraints
+        )[1]
 
         # Get energy.
         energy = pred_energy_test(test=test_point)
 
         # Get forces:
-        geom_test_pos = np.zeros((len(self.ind_constraints),
-                                  len(test_point[0])))
-        geom_test_neg = np.zeros((len(self.ind_constraints),
-                                  len(test_point[0])))
+        geom_test_pos = np.zeros((len(self.ind_constraints), len(test_point[0])))
+        geom_test_neg = np.zeros((len(self.ind_constraints), len(test_point[0])))
 
         for i in range(len(self.ind_constraints)):
             index_force = self.ind_constraints[i]
@@ -803,8 +917,8 @@ class ASECalc(Calculator):
             pos[i] = pos_flatten[index_force] - self.fs
             geom_test_neg[i] = pos
 
-        f_pos = self.gp.predict(test_fp=geom_test_pos)['prediction']
-        f_neg = self.gp.predict(test_fp=geom_test_neg)['prediction']
+        f_pos = self.gp.predict(test_fp=geom_test_pos)["prediction"]
+        f_neg = self.gp.predict(test_fp=geom_test_neg)["prediction"]
 
         gradients_list = (-f_neg + f_pos) / (2.0 * self.fs)
         gradients = np.zeros(len(pos_flatten))
@@ -815,12 +929,11 @@ class ASECalc(Calculator):
         forces = np.reshape(-gradients, (self.atoms.get_number_of_atoms(), 3))
 
         # Results:
-        self.results['energy'] = energy
-        self.results['forces'] = forces
+        self.results["energy"] = energy
+        self.results["forces"] = forces
 
 
 def get_fmax(gradients_flatten):
-
     """
     Function that print a list of max. individual atom forces.
     """
@@ -836,8 +949,7 @@ def get_fmax(gradients_flatten):
 
 
 def get_energy_catlearn(self, x=None):
-
-    """ Evaluates the objective function at a given point in space.
+    """Evaluates the objective function at a given point in space.
 
     Parameters
     ----------
@@ -861,15 +973,13 @@ def get_energy_catlearn(self, x=None):
     pos_ase = array_to_ase(x, self.num_atoms)
 
     self.ase_ini.set_calculator(None)
-    self.ase_ini = Atoms(self.ase_ini, positions=pos_ase,
-                         calculator=self.ase_calc)
+    self.ase_ini = Atoms(self.ase_ini, positions=pos_ase, calculator=self.ase_calc)
     energy = self.ase_ini.get_potential_energy(force_consistent=self.fc)
     return energy
 
 
 def get_forces_catlearn(self, x=None):
-
-    """ Evaluates the forces (ASE) or the Jacobian of the objective
+    """Evaluates the forces (ASE) or the Jacobian of the objective
     function at a given point in space.
 
     Parameters
@@ -895,7 +1005,7 @@ def get_forces_catlearn(self, x=None):
 
 
 def eval_and_append(self, interesting_point):
-    """ Evaluates the energy and forces (ASE) of the point of interest
+    """Evaluates the energy and forces (ASE) of the point of interest
         for a given atomistic structure.
 
     Parameters
@@ -913,21 +1023,18 @@ def eval_and_append(self, interesting_point):
     if np.ndim(interesting_point) == 1:
         interesting_point = np.array([interesting_point])
 
-    self.list_train = np.append(self.list_train,
-                                interesting_point, axis=0)
-    
-    # Remove old calculation information 
+    self.list_train = np.append(self.list_train, interesting_point, axis=0)
+
+    # Remove old calculation information
     self.ase_calc.results = {}
-    
+
     energy = get_energy_catlearn(self)
 
     self.list_targets = np.append(self.list_targets, energy)
 
     gradients = [-get_forces_catlearn(self).flatten()]
-    self.list_gradients = np.append(self.list_gradients,
-                                    gradients, axis=0)
+    self.list_gradients = np.append(self.list_gradients, gradients, axis=0)
 
-    self.list_targets = np.reshape(self.list_targets,
-                                   (len(self.list_targets), 1))
+    self.list_targets = np.reshape(self.list_targets, (len(self.list_targets), 1))
 
     self.feval += 1
