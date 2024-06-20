@@ -218,7 +218,7 @@ class MLNEB(object):
 
             neb_interpolation = NEB(self.images, k=self.spring)
 
-            neb_interpolation.interpolate(method=interpolation, mic=self.mic)
+            neb_interpolation.interpolate(method=interpolation, mic=self.mic, apply_constraint=True)
 
         # B) If the user sets a path:
         if path is not None:
